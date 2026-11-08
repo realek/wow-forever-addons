@@ -1,7 +1,9 @@
 ## Interface: 16001
 ## Title: Chat Copy
 ## Notes: Hold Alt and drag over a chat window to highlight its text, then Ctrl+C to copy.
-## Version: 1.0.0
+## Version: 0.1.0
+## Author: Realek
+## X-Website: https://github.com/realek
 ## IconTexture: Interface\Icons\INV_Misc_Note_01
 
 ChatCopy.lua

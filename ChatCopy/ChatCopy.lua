@@ -216,22 +216,6 @@ local function UpdateOverlays()
     end
 end
 
--- TEMPORARY: show the overlay on the selected chat for 15 seconds without
--- holding Alt, so its placement can be checked in a screenshot.
-SLASH_CHATCOPYTEST1 = "/chatcopytest"
-SlashCmdList.CHATCOPYTEST = function()
-    local chatFrame = SELECTED_CHAT_FRAME or DEFAULT_CHAT_FRAME
-    local overlay = GetOverlay(chatFrame)
-    overlay:Show()
-    local area, c = GetTextArea(chatFrame), chatFrame
-    print(format("Chat frame top %.0f bottom %.0f | text area top %.0f bottom %.0f | overlay top %.0f bottom %.0f",
-        c:GetTop() or -1, c:GetBottom() or -1, area:GetTop() or -1, area:GetBottom() or -1,
-        overlay:GetTop() or -1, overlay:GetBottom() or -1))
-    C_Timer.After(15, function()
-        if not overlay.edit:HasFocus() then overlay:Hide() end
-    end)
-end
-
 local watcher = CreateFrame("Frame")
 watcher:RegisterEvent("MODIFIER_STATE_CHANGED")
 watcher:SetScript("OnEvent", function(self, _, key)
