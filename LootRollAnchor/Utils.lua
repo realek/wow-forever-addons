@@ -3,6 +3,7 @@
 --   Util            generic table / rectangle helpers
 --   Util.EditMode   safe access to Blizzard's Edit Mode
 --   Util.Snap       Edit Mode style snapping and guide lines
+--   Util.CreateMover  draggable Edit Mode box with per-layout positions
 
 local _, ns = ...
 
@@ -240,6 +241,19 @@ function Snap.Compute(l, b, w, h, exclude)
     return l + dx, b + dy, xLine, yLine
 end
 
+-- Edit Mode's snap preview lines are solid red, 1.5 screen pixels thick.
+local GUIDE_COLOR = { 1, 0, 0, 1 }
+local GUIDE_PIXELS = 1.5
+
+-- `pixels` physical screen pixels, in `frame`'s UI units.
+local function PixelsToUnits(frame, pixels)
+    local factor = 1
+    if PixelUtil and PixelUtil.GetPixelToUIUnitFactor then
+        factor = PixelUtil.GetPixelToUIUnitFactor()
+    end
+    return pixels * factor / frame:GetEffectiveScale()
+end
+
 -- Full-screen guide lines that show where a dragged frame will snap.
 -- Returns an object with :Show(xLine, yLine) and :Hide().
 function Snap.CreateGuides()
@@ -249,28 +263,27 @@ function Snap.CreateGuides()
     frame:Hide()
 
     local function NewLine()
-        local tex = frame:CreateTexture(nil, "OVERLAY")
-        tex:SetColorTexture(0.4, 0.8, 1.0, 0.9)
-        return tex
+        local line = frame:CreateLine(nil, "OVERLAY")
+        line:SetColorTexture(unpack(GUIDE_COLOR))
+        return line
     end
     local vLine, hLine = NewLine(), NewLine()
-    vLine:SetWidth(2)
-    hLine:SetHeight(2)
 
     local guides = {}
 
     function guides:Show(xLine, yLine)
+        local thickness = PixelsToUnits(frame, GUIDE_PIXELS)
         vLine:SetShown(xLine ~= nil)
         if xLine then
-            vLine:ClearAllPoints()
-            vLine:SetPoint("TOP", UIParent, "TOPLEFT", xLine, 0)
-            vLine:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", xLine, 0)
+            vLine:SetStartPoint("TOPLEFT", UIParent, xLine, 0)
+            vLine:SetEndPoint("BOTTOMLEFT", UIParent, xLine, 0)
+            vLine:SetThickness(thickness)
         end
         hLine:SetShown(yLine ~= nil)
         if yLine then
-            hLine:ClearAllPoints()
-            hLine:SetPoint("LEFT", UIParent, "BOTTOMLEFT", 0, yLine)
-            hLine:SetPoint("RIGHT", UIParent, "BOTTOMRIGHT", 0, yLine)
+            hLine:SetStartPoint("BOTTOMLEFT", UIParent, 0, yLine)
+            hLine:SetEndPoint("BOTTOMRIGHT", UIParent, 0, yLine)
+            hLine:SetThickness(thickness)
         end
         frame:SetShown(xLine ~= nil or yLine ~= nil)
     end
@@ -280,4 +293,296 @@ function Snap.CreateGuides()
     end
 
     return guides
+end
+
+---------------------------------------------------------------------------
+-- Mover
+---------------------------------------------------------------------------
+-- A box you can drag while Edit Mode is open. It snaps like Edit Mode
+-- does and remembers one position for each Edit Mode layout.
+--
+-- Util.CreateMover(opts):
+--   opts.name          global frame name
+--   opts.label         text shown in the box
+--   opts.width/height  box size
+--   opts.defaults      default position { point, relPoint, x, y, ... }
+--   opts.snapExclude   optional set of frames not to snap to
+--   opts.onMoved(pos)  called after the box is dragged to a new spot
+--   opts.onReset(pos)  called after a right-click puts it back to defaults
+--
+-- The mover has no position until :SetStore(t) is called with a saved
+-- table; it keeps t.default and t.layouts[layoutName] in there.
+
+-- Edit Mode draws each element's "Selection" frame as a nine-slice: cyan
+-- ("highlight") while Edit Mode is open, yellow ("selected") for the
+-- element being moved. We copy those pieces from a live Blizzard element,
+-- so our boxes match whatever art this client uses.
+local NINE_SLICE_PIECES = {
+    "TopLeftCorner", "TopRightCorner", "BottomLeftCorner", "BottomRightCorner",
+    "TopEdge", "BottomEdge", "LeftEdge", "RightEdge", "Center",
+}
+
+-- Plain colors in case there is no Blizzard element to copy from
+-- (sampled from Edit Mode's highlight / selected borders).
+local COLOR_IDLE     = { 0.22, 0.59, 0.75 }
+local COLOR_SELECTED = { 1.0, 0.82, 0.0 }
+
+local function AtlasExists(atlas)
+    if not (C_Texture and C_Texture.GetAtlasInfo) then return true end
+    return C_Texture.GetAtlasInfo(atlas) ~= nil
+end
+
+-- A Blizzard Edit Mode selection frame whose art has been drawn.
+local function FindBlizzardSelection()
+    for _, f in ipairs(EditMode.GetElements()) do
+        local sel = f.Selection
+        local corner = type(sel) == "table" and sel.TopLeftCorner
+        if corner and corner.GetAtlas and corner:GetAtlas() then return sel end
+    end
+    return nil
+end
+
+-- The same atlas in the highlight or selected variant, if it exists.
+local function AtlasVariant(atlas, selected)
+    local base = atlas:gsub("selected", "highlight")
+    local wanted = selected and base:gsub("highlight", "selected") or base
+    if AtlasExists(wanted) then return wanted, true end
+    return atlas, false
+end
+
+-- Draw `art` like a Blizzard selection frame. Returns false if there is
+-- nothing to copy from yet.
+local function CopyEditModeArt(art, selected)
+    local sel = FindBlizzardSelection()
+    if not sel then return false end
+
+    local ok = pcall(function()
+        for _, name in ipairs(NINE_SLICE_PIECES) do
+            local src = sel[name]
+            local atlas = src and src:GetAtlas()
+            if atlas then
+                local dst = art[name]
+                if not dst then
+                    dst = art:CreateTexture(nil, src:GetDrawLayer())
+                    art[name] = dst
+                end
+
+                local variant, exact = AtlasVariant(atlas, selected)
+                dst:SetAtlas(variant)
+                dst:SetTexCoord(src:GetTexCoord())   -- keeps mirrored corners
+                dst:SetHorizTile(src:GetHorizTile())
+                dst:SetVertTile(src:GetVertTile())
+                dst:SetBlendMode(src:GetBlendMode())
+                dst:SetAlpha(src:GetAlpha())
+                if exact then
+                    dst:SetVertexColor(src:GetVertexColor())
+                else
+                    -- No art for that state: tint the art we have instead.
+                    local r, g, b = unpack(selected and COLOR_SELECTED or { 1, 1, 1 })
+                    dst:SetVertexColor(r, g, b)
+                end
+
+                -- Same size and anchors, pointing at our frame and pieces.
+                dst:SetSize(src:GetSize())
+                dst:ClearAllPoints()
+                for i = 1, src:GetNumPoints() do
+                    local point, rel, relPoint, x, y = src:GetPoint(i)
+                    local target = art
+                    for _, other in ipairs(NINE_SLICE_PIECES) do
+                        if rel == sel[other] and art[other] then target = art[other] end
+                    end
+                    dst:SetPoint(point, target, relPoint, x, y)
+                end
+                dst:Show()
+            end
+        end
+        art:SetAlpha(sel:GetAlpha())
+    end)
+    return ok
+end
+
+local sharedGuides
+local function GetGuides()
+    sharedGuides = sharedGuides or Snap.CreateGuides()
+    return sharedGuides
+end
+
+local function CreateBox(opts)
+    local box = CreateFrame("Frame", opts.name, UIParent)
+    box:SetSize(opts.width, opts.height)
+    box:SetFrameStrata("HIGH")
+    box:SetClampedToScreen(true)
+    box:SetMovable(true)
+    box:EnableMouse(true)
+    box:RegisterForDrag("LeftButton")
+    box:Hide()
+
+    local bg = box:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+
+    local edges = {}
+    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+        local edge = box:CreateTexture(nil, "BORDER")
+        if side == "TOP" or side == "BOTTOM" then
+            edge:SetPoint(side .. "LEFT")
+            edge:SetPoint(side .. "RIGHT")
+            edge:SetHeight(2)
+        else
+            edge:SetPoint("TOP" .. side)
+            edge:SetPoint("BOTTOM" .. side)
+            edge:SetWidth(2)
+        end
+        edges[#edges + 1] = edge
+    end
+
+    -- Holds the Edit Mode art, like the "Selection" child of Blizzard's
+    -- own Edit Mode elements.
+    local art = CreateFrame("Frame", nil, box)
+    art:SetAllPoints()
+
+    -- Text sits above the art.
+    local text = CreateFrame("Frame", nil, box)
+    text:SetAllPoints()
+    text:SetFrameLevel(art:GetFrameLevel() + 1)
+
+    local label = text:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    label:SetPoint("CENTER", 0, 6)
+    label:SetText(opts.label)
+
+    local hint = text:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("TOP", label, "BOTTOM", 0, -4)
+    hint:SetText("Right-click to reset")
+
+    local isSelected = false
+
+    function box:SetSelected(selected)
+        isSelected = selected
+        local useArt = CopyEditModeArt(art, selected)
+        art:SetShown(useArt)
+        bg:SetShown(not useArt)
+        for _, edge in ipairs(edges) do edge:SetShown(not useArt) end
+        if useArt then return true end
+
+        local r, g, b = unpack(selected and COLOR_SELECTED or COLOR_IDLE)
+        bg:SetColorTexture(r, g, b, 0.25)
+        for _, edge in ipairs(edges) do edge:SetColorTexture(r, g, b, 0.9) end
+        return false
+    end
+
+    -- Blizzard draws its selection frames when Edit Mode opens, possibly
+    -- just after we show, so retry briefly until there is art to copy.
+    local function TryArt(attempt)
+        if not box:IsShown() or box:SetSelected(isSelected) or attempt >= 10 then return end
+        C_Timer.After(0.1, function() TryArt(attempt + 1) end)
+    end
+    box:SetScript("OnShow", function() TryArt(1) end)
+
+    function box:SetHint(str)
+        hint:SetText(str)
+    end
+
+    box:SetSelected(false)
+    return box
+end
+
+function Util.CreateMover(opts)
+    local mover = {}
+    local box = CreateBox(opts)
+    mover.box = box
+
+    local store, pos
+    local exclude = opts.snapExclude or {}
+    exclude[box] = true
+
+    local function Place()
+        if not pos then return end
+        box:ClearAllPoints()
+        box:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
+    end
+
+    -- Use `t` (a saved-variables table) to keep positions in.
+    function mover:SetStore(t)
+        t.default = Util.CopyDefaults(t.default or {}, opts.defaults)
+        t.layouts = t.layouts or {}
+        store, pos = t, t.default
+        Place()
+    end
+
+    -- The active layout's position (nil before SetStore).
+    function mover:GetPosition()
+        return pos
+    end
+
+    -- Switch to the active layout's position and move the box there. A
+    -- layout seen for the first time starts from the current position.
+    function mover:Refresh()
+        if not store then return end
+        local name = EditMode.GetActiveLayoutName()
+        if not name then
+            pos = store.default
+        else
+            if not store.layouts[name] then
+                store.layouts[name] = Util.CopyDefaults({}, pos)
+            end
+            pos = Util.CopyDefaults(store.layouts[name], opts.defaults)
+        end
+        Place()
+    end
+
+    local dragging = false
+
+    local function ShowSnapPreview(self)
+        local l, b, w, h = self:GetRect()
+        if not l then return end
+        local _, _, xLine, yLine = Snap.Compute(l, b, w, h, exclude)
+        GetGuides():Show(xLine, yLine)
+    end
+
+    local function StopDragging()
+        dragging = false
+        box:SetScript("OnUpdate", nil)
+        box:StopMovingOrSizing()
+        box:SetSelected(false)
+        GetGuides():Hide()
+    end
+
+    box:SetScript("OnDragStart", function(self)
+        if not pos then return end
+        dragging = true
+        self:SetSelected(true)
+        self:StartMoving()
+        self:SetScript("OnUpdate", ShowSnapPreview)
+    end)
+
+    box:SetScript("OnDragStop", function(self)
+        if not dragging then return end
+        StopDragging()
+
+        local l, b, w, h = self:GetRect()
+        if l then
+            l, b = Snap.Compute(l, b, w, h, exclude)
+            local point, x, y = Util.RectToPoint(l, b, w, h)
+            pos.point, pos.relPoint, pos.x, pos.y = point, point, x, y
+            Place()
+        end
+        if opts.onMoved then opts.onMoved(pos) end
+    end)
+
+    box:SetScript("OnMouseUp", function(_, button)
+        if button ~= "RightButton" or dragging or not pos then return end
+        for k, v in pairs(opts.defaults) do pos[k] = v end
+        Place()
+        if opts.onReset then opts.onReset(pos) end
+    end)
+
+    function mover:Show()
+        box:Show()
+    end
+
+    function mover:Hide()
+        if dragging then StopDragging() end
+        box:Hide()
+    end
+
+    return mover
 end
