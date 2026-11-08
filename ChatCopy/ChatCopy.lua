@@ -24,6 +24,9 @@ end
 local function FormatMessage(text, r, g, b)
     local color = ColorCode(r, g, b)
     text = text
+        -- Links: keep only the visible part. A text box drops colors inside
+        -- a link (class-colored names), and links can't be clicked here anyway.
+        :gsub("|H.-|h(.-)|h", "%1")
         :gsub("|T.-|t", "")               -- texture icons
         :gsub("|A.-|a", "")               -- atlas icons
         :gsub("|K.-|k", "?")              -- Battle.net names can't be read
@@ -70,10 +73,14 @@ local function AlignToChat(overlay)
     local _, size = edit:GetFont()
     local lineHeight = (size or 14) + (chat:GetSpacing() or 0)
 
-    -- A short chat sits at the bottom, like the real one.
-    local gap = scroll:GetHeight() - (edit:GetHeight() - overlay.topInset)
-    overlay.topInset = math.max(0, gap)
-    edit:SetTextInsets(0, 0, overlay.topInset, 0)
+    -- A short chat sits at the bottom, like the real one: pad the top by
+    -- whatever the text doesn't fill.
+    local content = edit:GetHeight() - overlay.topInset
+    local inset = math.max(0, scroll:GetHeight() - content)
+    if math.abs(inset - overlay.topInset) > 0.5 then
+        overlay.topInset = inset
+        edit:SetTextInsets(0, 0, inset, 0)
+    end
 
     local ok, linesUp = pcall(chat.GetScrollOffset, chat)
     local offset = (ok and tonumber(linesUp) or 0) * lineHeight
@@ -88,6 +95,9 @@ local function Refresh(overlay)
     if font then edit:SetFont(font, size, flags or "") end
     pcall(edit.SetSpacing, edit, chat:GetSpacing())
     edit:SetWidth(GetTextArea(chat):GetWidth())
+
+    -- Chat settings can turn the indent back on; keep both wrapping the same.
+    if not overlay.boxIndents then pcall(chat.SetIndentedWordWrap, chat, false) end
 
     overlay.text = GetChatText(chat)
     overlay.numMessages = chat:GetNumMessages()
@@ -129,6 +139,19 @@ local function CreateOverlay(chatFrame)
     edit:SetShadowColor(0, 0, 0, 1)
     scroll:SetScrollChild(edit)
     overlay.edit = edit
+
+    -- Chat indents the wrapped part of long messages. Do the same if the text
+    -- box can; if it can't, turn chat's indent off so both wrap identically.
+    overlay.boxIndents = pcall(edit.SetIndentedWordWrap, edit, true)
+    if not overlay.boxIndents then pcall(chatFrame.SetIndentedWordWrap, chatFrame, false) end
+
+    -- The text box finishes wrapping over a few frames; re-align each time
+    -- its size settles (but never while you're selecting).
+    local function Realign()
+        if not edit:HasFocus() then AlignToChat(overlay) end
+    end
+    edit:SetScript("OnSizeChanged", Realign)
+    scroll:SetScript("OnScrollRangeChanged", Realign)
 
     scroll:SetScript("OnMouseWheel", function(self, delta)
         local _, size = edit:GetFont()
@@ -216,9 +239,54 @@ local function UpdateOverlays()
     end
 end
 
+-- TEMPORARY: toggle the overlay on the selected chat without holding Alt,
+-- so its placement can be checked in a screenshot.
+SLASH_CHATCOPYTEST1 = "/chatcopytest"
+SlashCmdList.CHATCOPYTEST = function()
+    -- The tab you're looking at: docked tabs that aren't selected are hidden.
+    local chatFrame
+    for i = 1, MAX_CHAT_WINDOWS do
+        local frame = _G["ChatFrame" .. i]
+        if frame and frame:IsVisible() then chatFrame = frame break end
+    end
+    if not chatFrame then return end
+    local overlay = GetOverlay(chatFrame)
+    if overlay:IsShown() then overlay:Hide() return end
+    overlay:Show()
+    local area = GetTextArea(chatFrame)
+    chatFrame:AddMessage(format("ChatCopy test: chat %.0f-%.0f, text area %.0f-%.0f (%s), overlay %.0f-%.0f, scroll %.0f/%.0f",
+        chatFrame:GetTop() or -1, chatFrame:GetBottom() or -1,
+        area:GetTop() or -1, area:GetBottom() or -1,
+        chatFrame.FontStringContainer and "container" or "frame",
+        overlay:GetTop() or -1, overlay:GetBottom() or -1,
+        overlay.scroll:GetVerticalScroll(), overlay.scroll:GetVerticalScrollRange()))
+
+    -- Once laid out: is the overlay actually drawing, and is the real text hidden?
+    C_Timer.After(0.5, function()
+        local edit, scroll = overlay.edit, overlay.scroll
+        local container = chatFrame.FontStringContainer
+        chatFrame:AddMessage(format("ChatCopy state: visible %s, text %d chars, edit %.0fx%.0f, scroll %.0f/%.0f (view %.0f), inset %.0f, real text alpha %s, font %s",
+            tostring(overlay:IsVisible()), #(overlay.text or ""),
+            edit:GetWidth(), edit:GetHeight(),
+            scroll:GetVerticalScroll(), scroll:GetVerticalScrollRange(), scroll:GetHeight(),
+            overlay.topInset or 0,
+            container and format("%.2f", container:GetAlpha()) or "n/a",
+            tostring((select(2, edit:GetFont())))))
+    end)
+end
+
 local watcher = CreateFrame("Frame")
 watcher:RegisterEvent("MODIFIER_STATE_CHANGED")
-watcher:SetScript("OnEvent", function(self, _, key)
+watcher:RegisterEvent("PLAYER_LOGIN")
+watcher:SetScript("OnEvent", function(self, event, key)
+    if event == "PLAYER_LOGIN" then
+        -- Set up now so chat's wrapping is matched before you first press Alt.
+        for i = 1, MAX_CHAT_WINDOWS do
+            local chatFrame = _G["ChatFrame" .. i]
+            if chatFrame then GetOverlay(chatFrame) end
+        end
+        return
+    end
     if key ~= "LALT" and key ~= "RALT" then return end
     -- Track the mouse only while Alt is held.
     self:SetScript("OnUpdate", IsAltKeyDown() and UpdateOverlays or nil)
