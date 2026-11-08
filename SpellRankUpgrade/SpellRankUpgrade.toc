@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: Spell Rank Upgrade
+## Notes: When you learn a new spell rank, replaces the lower ranks of that spell on your action bars.
+## Version: 1.0.0
+## IconTexture: Interface\Icons\misc_arrowlup
+
+SpellRankUpgrade.lua

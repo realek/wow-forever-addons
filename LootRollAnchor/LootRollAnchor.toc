@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Loot Roll Anchor
+## Notes: Move the group loot roll (Need/Greed/Pass) window from Edit Mode, with snapping.
+## Version: 1.2.1
+## IconTexture: Interface\Buttons\UI-GroupLoot-Dice-Up
+## SavedVariables: LootRollAnchorDB
+
+Utils.lua
+LootRollAnchor.lua

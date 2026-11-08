@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: Gear Set Guard
+## Notes: Buys back any item you sell to a vendor if it belongs to one of your equipment sets.
+## Version: 1.0.0
+## IconTexture: Interface\Icons\INV_Chest_Plate01
+
+GearSetGuard.lua
