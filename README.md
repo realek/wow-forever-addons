@@ -30,15 +30,22 @@ There are no slash commands; everything is done in Edit Mode.
 
 When you learn a new rank of a spell (for example *Holy Light Rank 2*), it replaces the lower ranks of that spell on **all your action bars** with the new rank. No macros are involved.
 
-- **Opt-in per spell.** Open the spellbook, turn on **Show auto-rank checkboxes** in the settings dropdown next to the search box, and tick the spells you want upgraded. The checkboxes hide again when the spellbook closes. Ticks are saved per character.
+- **Opt-in per spell.** Open the spellbook, turn on **Set up auto-rank skills** in the settings dropdown next to the search box, and tick the spells you want upgraded. The checkboxes hide again when the spellbook closes. Ticks are saved per character.
+- Upgraded buttons **flash gold** a few times so you can see what changed. Buttons on bar pages you aren't looking at don't flash.
 - If you learn a rank during combat, it upgrades your bars when combat ends, because action bars can't be changed in combat.
 - If you're holding something on the cursor, it waits until you put it down, so nothing gets dropped.
 - Any action bar button holding a spell below your highest known rank gets a **red border**, the same one the game draws in green around equipped items, so you can see at a glance which spells are downranked. This happens whether the spell is ticked or not.
+- **Lock a slot to keep a lower rank.** Turn on **Set up rank-locked action bar slots** in the spellbook's settings dropdown (or type `/spellrankupdate lock`), then click slots on your action bars. Any slot can be locked, whatever is in it: a ranked spell, a spell without ranks, a macro or an item. Locked slots get a **padlock** and are never upgraded, even if the spell is ticked. Other slots holding the same spell still upgrade as usual. Click again to unlock.
+  - While lock mode is on, every button shows a faint padlock and a light shade. Clicking doesn't cast anything, but you can still drop spells onto your bars.
+  - Lock mode ends when you turn it off, press **Escape**, close the spellbook or enter combat.
+  - A lock holds exactly what you locked; for a spell, that's the rank. Drag it to another slot and the lock moves with it. Replace it with something else and the lock comes off.
+  - Locks are saved per character and per spec.
 
 | Command | What it does |
 | --- | --- |
-| `/spellrankupdate` | Checks every ticked spell on your bars and upgrades any that aren't your highest known rank. |
+| `/spellrankupdate` | Checks every ticked spell on your bars and upgrades any that aren't your highest known rank. Locked slots are skipped, and it tells you how many. |
 | `/spellrankupdate config` | Shows or hides the auto-rank checkboxes in the spellbook. |
+| `/spellrankupdate lock` | Turns lock mode on or off. While it's on, clicking a spell on your action bars locks or unlocks its slot. |
 
 ## Gear Set Guard
 
