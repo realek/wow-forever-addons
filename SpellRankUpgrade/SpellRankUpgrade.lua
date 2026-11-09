@@ -5,7 +5,7 @@
 --
 -- Auto-rank is opt-in: nothing is upgraded until you tick it. In the
 -- spellbook's settings dropdown (next to the search box), turn on
--- "Show auto-rank checkboxes" and tick the spells to auto-rank. The
+-- "Set up auto-rank skills" and tick the spells to auto-rank. The
 -- checkboxes turn off again when the spellbook closes.
 -- "/spellrankupdate config" toggles them too. Ticks are saved per character.
 --
@@ -13,9 +13,10 @@
 -- your spellbook and upgrades any that aren't your highest known rank.
 --
 -- To keep a lower rank in a particular slot, lock it: "/spellrankupdate
--- lock" (or "Lock action bar slots" in the spellbook's settings dropdown),
--- then click spells on your action bars. Locked slots show a padlock and
--- are never upgraded. A lock holds that exact rank and moves with it if you
+-- lock" (or "Set up rank-locked action bar slots" in the spellbook's settings dropdown),
+-- then click slots on your action bars. Any slot can be locked, whatever is
+-- in it. Locked slots show a padlock and are never upgraded. A lock holds
+-- exactly what you locked (for spells, that rank) and moves with it if you
 -- drag it to another slot. Locks are saved per character and per spec.
 --
 -- Action bars can't be changed in combat, so upgrades learned in combat wait
@@ -67,9 +68,11 @@ end
 ---------------------------------------------------------------------------
 -- Slot locks
 ---------------------------------------------------------------------------
--- A locked slot is never upgraded. Each lock stores the exact rank (spell
--- ID) you locked, so it only holds while that rank is in the slot. Locks are
--- kept separately for each spec, since each spec has its own action bars.
+-- A locked slot is never upgraded. Any slot that holds something can be
+-- locked. Each lock stores exactly what was in the slot ("spell:635",
+-- "macro:3", ...), so for spells it holds that rank, and only while it's in
+-- the slot. Locks are kept separately for each spec, since each spec has
+-- its own action bars.
 
 -- Which set of action bars is active: the talent group (dual spec) and,
 -- where the client has them, the specialization.
@@ -80,7 +83,7 @@ local function GetSpecKey()
     return spec and (group .. "-" .. spec) or tostring(group)
 end
 
--- The active spec's locks (slot -> spell ID). With `create`, makes the
+-- The active spec's locks (slot -> action key). With `create`, makes the
 -- table if there isn't one yet; otherwise may return nil.
 local function GetLocks(create)
     if not db then return end
@@ -106,10 +109,17 @@ local function GetSlotSpell(slot)
     if actionType == "spell" then return id end
 end
 
+-- What's in the action slot as "type:id" (e.g. "spell:635"), or nil if
+-- it's empty.
+local function GetActionKey(slot)
+    local actionType, id = GetActionInfo(slot)
+    if actionType and id then return actionType .. ":" .. id end
+end
+
 local function IsLocked(slot)
     local locks = GetLocks()
-    local lockedID = locks and locks[slot]
-    return lockedID ~= nil and GetSlotSpell(slot) == lockedID
+    local lockedKey = locks and locks[slot]
+    return lockedKey ~= nil and GetActionKey(slot) == lockedKey
 end
 
 ---------------------------------------------------------------------------
@@ -308,18 +318,11 @@ local function HideTooltip()
     GameTooltip:Hide()
 end
 
-local function ShowNoRanksTooltip(owner, text)
-    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
-    GameTooltip:SetText("No ranks")
-    GameTooltip:AddLine(text, 1, 1, 1, true)
-    GameTooltip:Show()
-end
-
 ---------------------------------------------------------------------------
 -- Spellbook: tick or untick spells right in the spellbook
 ---------------------------------------------------------------------------
 -- The spellbook's settings dropdown (next to the search box) gets a
--- "Spell Rank Upgrade" section. "Show auto-rank checkboxes" turns the icon
+-- "Spell Rank Upgrade" section. "Set up auto-rank skills" turns the icon
 -- of every ranked spell in the book into a checkbox (while it's on, the
 -- icons toggle auto-rank instead of casting or dragging) and greys out
 -- spells that have no ranks (they can't be clicked or dragged), plus
@@ -415,7 +418,10 @@ local function CreateBlocker(itemFrame)
     blocker:SetFrameLevel(itemFrame.Button:GetFrameLevel() + 20)
     blocker:EnableMouse(true)
     blocker:SetScript("OnEnter", function(self)
-        ShowNoRanksTooltip(self, "This spell has no ranks, so it can't be auto-ranked.")
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("No ranks")
+        GameTooltip:AddLine("This spell has no ranks, so it can't be auto-ranked.", 1, 1, 1, true)
+        GameTooltip:Show()
     end)
     blocker:SetScript("OnLeave", HideTooltip)
     itemFrame.SpellRankUpgradeBlocker = blocker
@@ -545,10 +551,10 @@ if Menu and Menu.ModifyMenu then
         if not db then return end
         root:CreateDivider()
         root:CreateTitle("Spell Rank Upgrade")
-        root:CreateCheckbox("Show auto-rank checkboxes",
+        root:CreateCheckbox("Set up auto-rank skills",
             function() return showChecks end,
             function() SetShowChecks(not showChecks) end)
-        root:CreateCheckbox("Lock action bar slots",
+        root:CreateCheckbox("Set up rank-locked action bar slots",
             function() return lockMode end,
             function() SetLockMode(not lockMode) end)
     end)
@@ -649,43 +655,40 @@ end
 ---------------------------------------------------------------------------
 -- Action bars: locked slots
 ---------------------------------------------------------------------------
--- Locked slots show a padlock in the top-left corner. In lock mode, every
--- button holding something gets a cover: clicking a ranked spell locks or
--- unlocks its slot (unlocked ones show a faint padlock), and anything else
--- is darkened and does nothing, so nothing gets cast or dragged off by
--- accident. Drops still land: if you're holding something, clicking or
--- dropping on a cover places it as usual. Lock mode ends when you turn it
--- off, press Escape, close the spellbook or enter combat.
+-- Locked slots show a padlock over the whole icon. In lock mode, every
+-- button holding something gets a light shade and a faint padlock, and
+-- clicking it locks or unlocks the slot instead of casting, so nothing gets
+-- cast or dragged off by accident. Drops still land: if you're holding
+-- something, clicking or dropping on a cover places it as usual. Lock mode
+-- ends when you turn it off, press Escape, close the spellbook or enter
+-- combat.
 
 local LOCK_ICON = "Interface\\Buttons\\LockButton-Locked-Up"
-local HINT_ALPHA = 0.4     -- padlock on unlocked ranked spells in lock mode
-local RANKED_SHADE = 0.3   -- ranked spells are shaded lighter in lock mode
-
--- Spell ID if the action slot holds a ranked spell, else nil.
-local function GetRankedSpell(slot)
-    local id = GetSlotSpell(slot)
-    if id and GetRank(id) then return id end
-end
+local HINT_ALPHA = 0.4     -- padlock on unlocked slots in lock mode
+local COVER_SHADE = 0.3    -- how dark the lock-mode cover is (x SHADE_ALPHA)
 
 local function ShowLockTooltip(cover)
     local slot = GetButtonSlot(cover.button)
-    local spellID = slot and GetRankedSpell(slot)
-    if not spellID then
-        ShowNoRanksTooltip(cover, "This isn't a ranked spell, so there's nothing to lock.")
-        return
-    end
+    if not slot then return end
     local locked = IsLocked(slot)
+    local spellID = GetSlotSpell(slot)
+    local ranked = spellID and GetRank(spellID)
     GameTooltip:SetOwner(cover, "ANCHOR_RIGHT")
-    GameTooltip:SetSpellByID(spellID)
+    GameTooltip:SetAction(slot)
     GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("Rank lock: " .. (locked and "|cff00ff00on|r" or "|cffff4040off|r"))
-    GameTooltip:AddLine(locked
-        and "This slot keeps this rank. Auto-rank leaves it alone, and the lock moves with it if you drag it to another slot."
-        or "Auto-rank can replace this spell with a higher rank.",
-        1, 1, 1, true)
-    if not IsEnabled(spellID) then
-        GameTooltip:AddLine("This spell isn't ticked for auto-rank in the spellbook, so it isn't upgraded anyway.",
-            0.6, 0.6, 0.6, true)
+    GameTooltip:AddLine("Slot lock: " .. (locked and "|cff00ff00on|r" or "|cffff4040off|r"))
+    if locked then
+        GameTooltip:AddLine("Auto-rank never changes this slot. The lock moves with it if you drag it to another slot.",
+            1, 1, 1, true)
+    elseif ranked then
+        GameTooltip:AddLine("Auto-rank can replace this spell with a higher rank.", 1, 1, 1, true)
+        if not IsEnabled(spellID) then
+            GameTooltip:AddLine("This spell isn't ticked for auto-rank in the spellbook, so it isn't upgraded anyway.",
+                0.6, 0.6, 0.6, true)
+        end
+    else
+        GameTooltip:AddLine("Auto-rank doesn't change this slot, but you can lock it to make sure.",
+            1, 1, 1, true)
     end
     GameTooltip:AddLine("Click to toggle.", 0.6, 0.6, 0.6)
     GameTooltip:Show()
@@ -702,11 +705,9 @@ local function UpdateLock(button, slot)
         return
     end
 
-    local ranked = covered and GetRankedSpell(slot)
     -- Empty slots get no cover, so hidden empty buttons stay hidden.
     cover:SetShown(covered and true or false)
-    cover.Shade:SetAlpha(ranked and RANKED_SHADE or 1)
-    badge:SetShown((locked or ranked) and true or false)
+    badge:Show()
     badge:SetAlpha(locked and 1 or HINT_ALPHA)
     badge.Icon:SetDesaturated(not locked)
     if covered and cover:IsVisible() and cover:IsMouseOver() then
@@ -726,12 +727,12 @@ local function UpdateSlotLock(slot)
 end
 
 local function ToggleLock(slot)
-    local spellID = GetRankedSpell(slot)
-    if not spellID then return end
+    local key = GetActionKey(slot)
+    if not key then return end
     if IsLocked(slot) then
         RemoveLock(slot)
     else
-        GetLocks(true)[slot] = spellID
+        GetLocks(true)[slot] = key
     end
     UpdateSlotLock(slot)
 end
@@ -759,6 +760,7 @@ local function CreateLockFrames(button)
     cover:SetFrameLevel(level)
     cover:RegisterForClicks("AnyUp")
     cover.Shade = AddShade(cover)
+    cover.Shade:SetAlpha(COVER_SHADE)
     cover:SetHighlightTexture(HIGHLIGHT_TEXTURE, "ADD")
     cover:SetScript("OnClick", OnCoverClick)
     cover:SetScript("OnReceiveDrag", OnCoverClick)
@@ -768,8 +770,7 @@ local function CreateLockFrames(button)
     cover:Hide()
 
     local badge = CreateFrame("Frame", nil, button)
-    badge:SetSize(16, 16)
-    badge:SetPoint("TOPLEFT", -2, 2)
+    badge:SetAllPoints(button.icon or button)   -- covers the whole spell icon
     badge:SetFrameLevel(level + 1)
     badge.Icon = badge:CreateTexture(nil, "OVERLAY")
     badge.Icon:SetAllPoints()
@@ -780,30 +781,34 @@ local function CreateLockFrames(button)
     button.SpellRankUpgradeBadge = badge
 end
 
--- Locks follow the rank when you move it. When a locked slot changes while
--- you're holding something, you moved its spell off it or dropped something
--- on it, so the lock comes off. If you're holding the locked rank, the lock
--- goes with it to the next slot you drop it in. Changes with an empty cursor
--- (logging in, switching spec, other add-ons) leave locks alone.
+-- Locks follow what's locked when you move it. When a locked slot changes
+-- while you're holding something, you moved its contents off it or dropped
+-- something on it, so the lock comes off. If you're holding what was
+-- locked, the lock goes with it to the next slot you drop it in. Changes
+-- with an empty cursor (logging in, switching spec, other add-ons) leave
+-- locks alone.
 local changedSlots = {}   -- slots changed since the last check
-local carriedLock         -- spell ID of a locked rank on the cursor
+local carriedLock         -- action key of a locked action on the cursor
 
-local function CursorHasSpell(spellID)
-    local kind, _, _, cursorSpellID = GetCursorInfo()
-    return kind == "spell" and cursorSpellID == spellID
+-- What's on the cursor, in the same "type:id" form as GetActionKey.
+local function GetCursorKey()
+    local kind, id, _, spellID = GetCursorInfo()
+    if kind == "spell" then id = spellID end
+    if kind and id then return kind .. ":" .. id end
 end
 
 local function ReconcileLocks()
+    local cursorKey = GetCursorKey()
     local busy = GetCursorInfo() ~= nil
     for slot in pairs(changedSlots) do
         changedSlots[slot] = nil
         local locks = GetLocks()
-        local lockedID = locks and locks[slot]
-        local current = GetSlotSpell(slot)
-        if lockedID and current ~= lockedID then
+        local lockedKey = locks and locks[slot]
+        local current = GetActionKey(slot)
+        if lockedKey and current ~= lockedKey then
             if busy then
                 RemoveLock(slot)
-                if CursorHasSpell(lockedID) then carriedLock = lockedID end
+                if cursorKey == lockedKey then carriedLock = lockedKey end
             end
         elseif carriedLock and current == carriedLock then
             GetLocks(true)[slot] = carriedLock
@@ -811,7 +816,7 @@ local function ReconcileLocks()
         end
     end
     -- Put down somewhere else, or cleared: the lock is gone.
-    if carriedLock and not CursorHasSpell(carriedLock) then carriedLock = nil end
+    if carriedLock and GetCursorKey() ~= carriedLock then carriedLock = nil end
 end
 
 local function UpdateButton(button)
@@ -867,7 +872,7 @@ lockModeFrame:Hide()
 tinsert(UISpecialFrames, LOCK_MODE_FRAME)
 lockModeFrame:SetScript("OnHide", function() SetLockMode(false) end)
 
--- `reason` replaces the usual message when lock mode is turned off.
+-- `reason`, if given, is printed when lock mode is turned off.
 function SetLockMode(on, reason)
     if not db or lockMode == on then return end
     if on and InCombatLockdown() then
@@ -878,12 +883,7 @@ function SetLockMode(on, reason)
     lockModeFrame:SetShown(on)
     -- Covers and padlocks only; nothing else on the buttons changes.
     ForEachButton(UpdateButtonLock)
-    if on then
-        Print("Click spells on your action bars to lock or unlock their rank. "
-            .. "Press Escape when you're done.")
-    else
-        Print(reason or "Done locking slots.")
-    end
+    if reason then Print(reason) end
 end
 
 ---------------------------------------------------------------------------
@@ -1011,9 +1011,15 @@ events:SetScript("OnEvent", function(_, event, arg1)
             -- Opt-in list of spell names to auto-rank. The old opt-out
             -- list and saved checkbox toggle are dropped.
             SpellRankUpgradeDB.enabled = SpellRankUpgradeDB.enabled or {}
-            -- Locked slots per spec: spec key -> { slot -> spell ID }. The
+            -- Locked slots per spec: spec key -> { slot -> action key }.
+            -- Locks saved as a bare spell ID become "spell:<id>". The
             -- earlier slot -> spell name format is dropped.
             SpellRankUpgradeDB.locks = SpellRankUpgradeDB.locks or {}
+            for _, locks in pairs(SpellRankUpgradeDB.locks) do
+                for slot, key in pairs(locks) do
+                    if type(key) == "number" then locks[slot] = "spell:" .. key end
+                end
+            end
             SpellRankUpgradeDB.locked = nil
             SpellRankUpgradeDB.excluded = nil
             SpellRankUpgradeDB.showChecks = nil
