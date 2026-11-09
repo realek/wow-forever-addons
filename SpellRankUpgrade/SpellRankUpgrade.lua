@@ -141,6 +141,15 @@ local function GetHighestRanks()
     return highest
 end
 
+-- If the action slot holds a spell below your highest known rank, returns
+-- the spell ID of that highest rank. `highest` is from GetHighestRanks().
+local function GetHigherRank(slot, highest)
+    local actionType, id = GetActionInfo(slot)
+    local best = (actionType == "spell") and id and highest[GetName(id)]
+    local barRank, bestRank = best and GetRank(id), best and GetRank(best)
+    if barRank and bestRank and barRank < bestRank then return best end
+end
+
 -- Upgrade every spell on the action bars to its highest known rank.
 local function CheckAll()
     local highest = GetHighestRanks()
@@ -148,10 +157,8 @@ local function CheckAll()
     -- Which spells on the bars have a higher rank available?
     local toUpgrade = {}
     for slot = 1, MAX_ACTION_SLOT do
-        local actionType, id = GetActionInfo(slot)
-        local best = (actionType == "spell") and id and highest[GetName(id)]
-        local barRank, bestRank = best and GetRank(id), best and GetRank(best)
-        if barRank and bestRank and barRank < bestRank and IsEnabled(best) then
+        local best = GetHigherRank(slot, highest)
+        if best and IsEnabled(best) then
             toUpgrade[best] = true
         end
     end
@@ -462,6 +469,95 @@ EventRegistry:RegisterCallback("PlayerSpellsFrame.SpellBookFrame.Hide", function
 end, callbackOwner)
 
 ---------------------------------------------------------------------------
+-- Action bars: red outline on spells below your highest known rank
+---------------------------------------------------------------------------
+-- Any ranked spell on your bars that isn't your highest known rank gets a
+-- red border, the same border Blizzard draws in green around equipped items,
+-- whether the spell is ticked or not.
+
+-- Blizzard tints the equipped-item border (0, 1, 0, 0.35); red reads darker
+-- than green, so it gets a bit more alpha.
+local OUTLINE_COLOR = { 1, 0, 0, 0.5 }
+local BUTTON_PREFIXES = {
+    "ActionButton", "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
+    "MultiBarRightButton", "MultiBarLeftButton",
+    "MultiBar5Button", "MultiBar6Button", "MultiBar7Button",
+}
+local BUTTONS_PER_BAR = 12
+
+local highestRanks       -- name -> spellID; nil until the first refresh
+local ranksDirty = true  -- spells changed, rebuild highestRanks
+local refreshQueued = false
+
+-- A copy of the button's equipped-item border (button.Border), tinted red.
+-- It's our own texture, since Blizzard shows and hides Border itself.
+local function CreateOutline(button)
+    local src = button.Border
+    if not src then return end
+    local layer, sublevel = src:GetDrawLayer()
+    local outline = button:CreateTexture(nil, layer, nil, sublevel)
+    local atlas = src.GetAtlas and src:GetAtlas()
+    if atlas then
+        outline:SetAtlas(atlas)
+    else
+        outline:SetTexture(src:GetTexture())
+        outline:SetTexCoord(src:GetTexCoord())
+    end
+    outline:SetBlendMode(src:GetBlendMode())
+    outline:SetSize(src:GetSize())
+    for i = 1, src:GetNumPoints() do
+        outline:SetPoint(src:GetPoint(i))
+    end
+    outline:SetVertexColor(unpack(OUTLINE_COLOR))
+    button.SpellRankUpgradeOutline = outline
+    return outline
+end
+
+local function UpdateOutline(button)
+    local slot = button.action
+    local show = highestRanks and slot and slot > 0
+        and GetHigherRank(slot, highestRanks) ~= nil
+    local outline = button.SpellRankUpgradeOutline
+    if show then
+        outline = outline or CreateOutline(button)
+        if outline then outline:Show() end
+    elseif outline then
+        outline:Hide()
+    end
+end
+
+local function RefreshOutlines()
+    refreshQueued = false
+    if ranksDirty or not highestRanks then
+        ranksDirty = false
+        highestRanks = GetHighestRanks()
+    end
+    for _, prefix in ipairs(BUTTON_PREFIXES) do
+        for i = 1, BUTTONS_PER_BAR do
+            local button = _G[prefix .. i]
+            if button then
+                -- Follow Blizzard's own updates (paging, stance bars, drags).
+                if not button.SpellRankUpgradeHooked and button.Update then
+                    button.SpellRankUpgradeHooked = true
+                    hooksecurefunc(button, "Update", UpdateOutline)
+                end
+                UpdateOutline(button)
+            end
+        end
+    end
+end
+
+-- Coalesce bursts of events into one refresh on the next frame, after
+-- Blizzard has updated its buttons.
+local function QueueRefresh(spellsChanged)
+    if spellsChanged then ranksDirty = true end
+    if not refreshQueued then
+        refreshQueued = true
+        C_Timer.After(0, RefreshOutlines)
+    end
+end
+
+---------------------------------------------------------------------------
 -- Slash command
 ---------------------------------------------------------------------------
 
@@ -497,9 +593,24 @@ for _, event in ipairs({ "LEARNED_SPELL_IN_SKILL_LINE", "LEARNED_SPELL_IN_TAB" }
 end
 events:RegisterEvent("PLAYER_REGEN_ENABLED")
 events:RegisterEvent("ADDON_LOADED")
+-- Outline refreshes.
+events:RegisterEvent("PLAYER_ENTERING_WORLD")
+events:RegisterEvent("SPELLS_CHANGED")
+events:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+events:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+events:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
+
+local OUTLINE_EVENTS = {
+    PLAYER_ENTERING_WORLD = true, SPELLS_CHANGED = true,
+    ACTIONBAR_SLOT_CHANGED = false, ACTIONBAR_PAGE_CHANGED = false,
+    UPDATE_BONUS_ACTIONBAR = false,
+}
 
 events:SetScript("OnEvent", function(_, event, arg1)
-    if event == "ADDON_LOADED" then
+    local spellsChanged = OUTLINE_EVENTS[event]
+    if spellsChanged ~= nil then
+        QueueRefresh(spellsChanged)
+    elseif event == "ADDON_LOADED" then
         if arg1 == ADDON_NAME then
             SpellRankUpgradeDB = SpellRankUpgradeDB or {}
             -- Opt-in list of spell names to auto-rank. The old opt-out

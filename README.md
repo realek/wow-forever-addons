@@ -33,6 +33,7 @@ When you learn a new rank of a spell (for example *Holy Light Rank 2*), it repla
 - **Opt-in per spell.** Open the spellbook, turn on **Show auto-rank checkboxes** in the settings dropdown next to the search box, and tick the spells you want upgraded. The checkboxes hide again when the spellbook closes. Ticks are saved per character.
 - If you learn a rank during combat, it upgrades your bars when combat ends, because action bars can't be changed in combat.
 - If you're holding something on the cursor, it waits until you put it down, so nothing gets dropped.
+- Any action bar button holding a spell below your highest known rank gets a **red border**, the same one the game draws in green around equipped items, so you can see at a glance which spells are downranked. This happens whether the spell is ticked or not.
 
 | Command | What it does |
 | --- | --- |
