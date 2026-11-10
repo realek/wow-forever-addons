@@ -15,7 +15,7 @@
 -- To keep a lower rank in a particular slot, lock it: "/spellrankupdate
 -- lock" (or "Set up rank-locked action bar slots" in the spellbook's settings dropdown),
 -- then click slots on your action bars. Any slot can be locked, whatever is
--- in it. Locked slots show a padlock and are never upgraded. A lock holds
+-- in it. Locked slots get a red outline and are never upgraded. A lock holds
 -- exactly what you locked (for spells, that rank) and moves with it if you
 -- drag it to another slot. Locks are saved per character and per spec.
 --
@@ -70,37 +70,44 @@ end
 ---------------------------------------------------------------------------
 -- A locked slot is never upgraded. Any slot that holds something can be
 -- locked. Each lock stores exactly what was in the slot ("spell:635",
--- "macro:3", ...), so for spells it holds that rank, and only while it's in
--- the slot. Locks are kept separately for each spec, since each spec has
--- its own action bars.
+-- "macro:My Heal", ...), so for spells it holds that rank, and only while
+-- it's in the slot. Locks are kept separately for each set of action bars.
 
--- Which set of action bars is active: the talent group (dual spec) and,
--- where the client has them, the specialization.
+-- Which set of action bars is active. On retail each specialization has its
+-- own bars; elsewhere each talent group (dual spec) does, and changing the
+-- specialization within a group leaves the bars alone.
 local GetSpecGroup = GetActiveSpecGroup or GetActiveTalentGroup
+local BARS_PER_SPEC = WOW_PROJECT_MAINLINE ~= nil and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+local specKey   -- cached; cleared when the spec may have changed
+
 local function GetSpecKey()
-    local group = (GetSpecGroup and GetSpecGroup()) or 1
-    local spec = GetSpecialization and GetSpecialization()
-    return spec and (group .. "-" .. spec) or tostring(group)
-end
-
--- The active spec's locks (slot -> action key). With `create`, makes the
--- table if there isn't one yet; otherwise may return nil.
-local function GetLocks(create)
-    if not db then return end
-    local key = GetSpecKey()
-    local locks = db.locks[key]
-    if not locks and create then
-        locks = {}
-        db.locks[key] = locks
+    if not specKey then
+        local group = (GetSpecGroup and GetSpecGroup()) or 1
+        local spec = BARS_PER_SPEC and GetSpecialization and GetSpecialization()
+        specKey = spec and (group .. "-" .. spec) or tostring(group)
     end
-    return locks
+    return specKey
 end
 
-local function RemoveLock(slot)
-    local locks = GetLocks()
-    if not locks then return end
-    locks[slot] = nil
-    if not next(locks) then db.locks[GetSpecKey()] = nil end
+-- The active bars' locks (slot -> action key), or nil if there are none.
+local function GetLocks()
+    return db and db.locks[GetSpecKey()]
+end
+
+-- Lock the slot on this action key, or unlock it if `key` is nil.
+local function SetLock(slot, key)
+    if not db then return end
+    local specLocks = GetLocks()
+    if key then
+        if not specLocks then
+            specLocks = {}
+            db.locks[GetSpecKey()] = specLocks
+        end
+        specLocks[slot] = key
+    elseif specLocks then
+        specLocks[slot] = nil
+        if not next(specLocks) then db.locks[GetSpecKey()] = nil end
+    end
 end
 
 -- Spell ID in the action slot, or nil if it holds anything but a spell.
@@ -110,9 +117,11 @@ local function GetSlotSpell(slot)
 end
 
 -- What's in the action slot as "type:id" (e.g. "spell:635"), or nil if
--- it's empty.
+-- it's empty. A macro goes by its name: its index shifts as macros are
+-- added or deleted, and some clients report the spell it shows instead.
 local function GetActionKey(slot)
     local actionType, id = GetActionInfo(slot)
+    if actionType == "macro" then id = GetActionText(slot) or id end
     if actionType and id then return actionType .. ":" .. id end
 end
 
@@ -148,16 +157,20 @@ local function FindSlots(newID)
     return slots
 end
 
+local upgrading = false   -- our own PlaceAction calls aren't moves to track
+
 -- Put the new rank in every slot that has a lower rank.
 -- Returns how many slots were upgraded.
 local function Upgrade(newID)
     if not IsEnabled(newID) then return 0 end
     local slots = FindSlots(newID)
+    upgrading = true
     for _, slot in ipairs(slots) do
         PickupSpellByID(newID)
         PlaceAction(slot)
         ClearCursor()   -- the old rank lands on the cursor; drop it
     end
+    upgrading = false
 
     if #slots > 0 then
         PulseSlots(slots)
@@ -303,14 +316,13 @@ end
 -- Shared overlay pieces (spellbook checkboxes and action bar lock covers)
 ---------------------------------------------------------------------------
 
-local SHADE_ALPHA = 0.65
 local HIGHLIGHT_TEXTURE = "Interface\\Buttons\\ButtonHilight-Square"
 
--- A dark shade over the whole frame.
-local function AddShade(frame)
+-- A dark shade over the whole frame; `alpha` is how dark.
+local function AddShade(frame, alpha)
     local shade = frame:CreateTexture(nil, "ARTWORK")
     shade:SetAllPoints()
-    shade:SetColorTexture(0, 0, 0, SHADE_ALPHA)
+    shade:SetColorTexture(0, 0, 0, alpha)
     return shade
 end
 
@@ -377,6 +389,8 @@ local function ShowCheckTooltip(check)
     GameTooltip:Show()
 end
 
+local CHECK_SHADE = 0.65   -- how dark an unticked spell's icon gets
+
 -- A checkbox that covers the whole spell icon: a big checkmark and the
 -- spellbook glow when ticked, the icon darkened when unticked.
 local function CreateItemCheck(itemFrame)
@@ -384,7 +398,7 @@ local function CreateItemCheck(itemFrame)
     check:SetAllPoints(itemFrame.Button.Icon)
     check:SetFrameLevel(itemFrame.Button:GetFrameLevel() + 20)
 
-    check.Shade = AddShade(check)
+    check.Shade = AddShade(check, CHECK_SHADE)
     check:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
 
     -- Glow while ticked: the spellbook's own "unassigned" glow, placed the
@@ -560,19 +574,27 @@ if Menu and Menu.ModifyMenu then
     end)
 end
 
+-- Closing the spellbook window ends checkbox mode and lock mode, so the
+-- spellbook always opens normally and your bars go back to casting.
+-- Switching to another tab of the window (talents, say) doesn't.
+local closeHooked = false
+local function OnSpellbookClosed()
+    if showChecks then SetShowChecks(false) end
+    SetLockMode(false)
+end
+
 -- Catch spellbook item frames as they're created or refilled.
 local callbackOwner = {}
 EventRegistry:RegisterCallback("PlayerSpellsFrame.SpellBookFrame.DisplayedSpellsChanged",
     RefreshSpellbookChecks, callbackOwner)
 EventRegistry:RegisterCallback("PlayerSpellsFrame.SpellBookFrame.Show", function()
+    -- The window is loaded on demand; it exists once the spellbook shows.
+    if not closeHooked and PlayerSpellsFrame then
+        closeHooked = true
+        PlayerSpellsFrame:HookScript("OnHide", OnSpellbookClosed)
+    end
     RefreshSpellbookChecks()
     UpdateBulkButtons()
-end, callbackOwner)
--- Closing the spellbook ends checkbox mode and lock mode, so the spellbook
--- always opens normally and your bars go back to casting.
-EventRegistry:RegisterCallback("PlayerSpellsFrame.SpellBookFrame.Hide", function()
-    if showChecks then SetShowChecks(false) end
-    SetLockMode(false)
 end, callbackOwner)
 
 ---------------------------------------------------------------------------
@@ -602,18 +624,16 @@ local function GetButtonSlot(button)
 end
 
 ---------------------------------------------------------------------------
--- Action bars: red outline on spells below your highest known rank
+-- Action bars: red outline on locked slots
 ---------------------------------------------------------------------------
--- Any ranked spell on your bars that isn't your highest known rank gets a
--- red border, the same border Blizzard draws in green around equipped items,
--- whether the spell is ticked or not.
+-- Locked slots get a red border, the same border Blizzard draws in green
+-- around equipped items. Lower ranks don't get one by themselves: you put
+-- a lower rank on your bars on purpose, in a slot you lock.
 
 -- Blizzard tints the equipped-item border (0, 1, 0, 0.35); red reads darker
 -- than green, so it gets a bit more alpha.
 local OUTLINE_COLOR = { 1, 0, 0, 0.5 }
 
-local highestRanks       -- name -> spellID; nil until the first refresh
-local ranksDirty = true  -- spells changed, rebuild highestRanks
 local refreshQueued = false
 
 -- A copy of the button's equipped-item border (button.Border), tinted red.
@@ -640,9 +660,7 @@ local function CreateOutline(button)
     return outline
 end
 
-local function UpdateOutline(button, slot)
-    local show = highestRanks and slot
-        and GetHigherRank(slot, highestRanks) ~= nil
+local function UpdateOutline(button, show)
     local outline = button.SpellRankUpgradeOutline
     if show then
         outline = outline or CreateOutline(button)
@@ -655,17 +673,17 @@ end
 ---------------------------------------------------------------------------
 -- Action bars: locked slots
 ---------------------------------------------------------------------------
--- Locked slots show a padlock over the whole icon. In lock mode, every
--- button holding something gets a light shade and a faint padlock, and
--- clicking it locks or unlocks the slot instead of casting, so nothing gets
--- cast or dragged off by accident. Drops still land: if you're holding
+-- Locked slots show the red outline above. In lock mode, every button
+-- holding something gets a light shade and a padlock over the whole icon
+-- (bright if locked, faint if not), and clicking it locks or unlocks the
+-- slot instead of casting, so nothing gets cast or dragged off by accident. Drops still land: if you're holding
 -- something, clicking or dropping on a cover places it as usual. Lock mode
 -- ends when you turn it off, press Escape, close the spellbook or enter
 -- combat.
 
 local LOCK_ICON = "Interface\\Buttons\\LockButton-Locked-Up"
 local HINT_ALPHA = 0.4     -- padlock on unlocked slots in lock mode
-local COVER_SHADE = 0.3    -- how dark the lock-mode cover is (x SHADE_ALPHA)
+local COVER_SHADE = 0.2    -- how dark the lock-mode cover is
 
 local function ShowLockTooltip(cover)
     local slot = GetButtonSlot(cover.button)
@@ -695,22 +713,24 @@ local function ShowLockTooltip(cover)
 end
 
 local function UpdateLock(button, slot)
+    local locked = slot and IsLocked(slot)
+    UpdateOutline(button, locked)
     local cover, badge = button.SpellRankUpgradeCover, button.SpellRankUpgradeBadge
     if not cover then return end   -- created on the next refresh out of combat
-    local locked = slot and IsLocked(slot)
+    -- Only in lock mode, and empty slots get no cover, so hidden empty
+    -- buttons stay hidden.
     local covered = lockMode and slot and HasAction(slot)
-    if not (locked or covered) then
+    if not covered then
         cover:Hide()
         badge:Hide()
         return
     end
 
-    -- Empty slots get no cover, so hidden empty buttons stay hidden.
-    cover:SetShown(covered and true or false)
+    cover:Show()
     badge:Show()
     badge:SetAlpha(locked and 1 or HINT_ALPHA)
     badge.Icon:SetDesaturated(not locked)
-    if covered and cover:IsVisible() and cover:IsMouseOver() then
+    if cover:IsVisible() and cover:IsMouseOver() then
         ShowLockTooltip(cover)
     end
 end
@@ -719,7 +739,7 @@ local function UpdateButtonLock(button)
     UpdateLock(button, GetButtonSlot(button))
 end
 
--- Update the padlock and cover on every button showing this slot.
+-- Update the outline, padlock and cover on every button showing this slot.
 local function UpdateSlotLock(slot)
     ForEachButton(function(button)
         if GetButtonSlot(button) == slot then UpdateLock(button, slot) end
@@ -729,11 +749,7 @@ end
 local function ToggleLock(slot)
     local key = GetActionKey(slot)
     if not key then return end
-    if IsLocked(slot) then
-        RemoveLock(slot)
-    else
-        GetLocks(true)[slot] = key
-    end
+    SetLock(slot, not IsLocked(slot) and key or nil)
     UpdateSlotLock(slot)
 end
 
@@ -759,8 +775,7 @@ local function CreateLockFrames(button)
     cover:SetAllPoints()
     cover:SetFrameLevel(level)
     cover:RegisterForClicks("AnyUp")
-    cover.Shade = AddShade(cover)
-    cover.Shade:SetAlpha(COVER_SHADE)
+    cover.Shade = AddShade(cover, COVER_SHADE)
     cover:SetHighlightTexture(HIGHLIGHT_TEXTURE, "ADD")
     cover:SetScript("OnClick", OnCoverClick)
     cover:SetScript("OnReceiveDrag", OnCoverClick)
@@ -781,73 +796,99 @@ local function CreateLockFrames(button)
     button.SpellRankUpgradeBadge = badge
 end
 
--- Locks follow what's locked when you move it. When a locked slot changes
--- while you're holding something, you moved its contents off it or dropped
--- something on it, so the lock comes off. If you're holding what was
--- locked, the lock goes with it to the next slot you drop it in. Changes
--- with an empty cursor (logging in, switching spec, other add-ons) leave
--- locks alone.
-local changedSlots = {}   -- slots changed since the last check
+-- Locks follow what's locked when you move it. Every way of moving an
+-- action on the bars goes through PickupAction, PlaceAction or UseAction
+-- (clicking a slot while holding something drops it there), and each one
+-- swaps the slot with the cursor. So right after each call we know where
+-- things went: a locked action that left its slot is on the cursor, and
+-- the lock goes with it; a carried lock that landed in the slot locks it.
+-- A carried lock that's put down anywhere else, or cleared, is gone.
 local carriedLock         -- action key of a locked action on the cursor
+local carryClearQueued = false
 
--- What's on the cursor, in the same "type:id" form as GetActionKey.
-local function GetCursorKey()
-    local kind, id, _, spellID = GetCursorInfo()
-    if kind == "spell" then id = spellID end
-    if kind and id then return kind .. ":" .. id end
-end
+local function OnSlotSwapped(slot)
+    if upgrading or not db or type(slot) ~= "number" then return end
+    local locks = GetLocks()
+    local old = locks and locks[slot]
+    local carried = carriedLock
+    if not (old or carried) then return end
+    local current = GetActionKey(slot)
+    if current == old then return end   -- nothing moved (a cast, say)
+    local landed = carried ~= nil and current == carried
+    if not (old or landed) then return end
 
-local function ReconcileLocks()
-    local cursorKey = GetCursorKey()
-    local busy = GetCursorInfo() ~= nil
-    for slot in pairs(changedSlots) do
-        changedSlots[slot] = nil
-        local locks = GetLocks()
-        local lockedKey = locks and locks[slot]
-        local current = GetActionKey(slot)
-        if lockedKey and current ~= lockedKey then
-            if busy then
-                RemoveLock(slot)
-                if cursorKey == lockedKey then carriedLock = lockedKey end
-            end
-        elseif carriedLock and current == carriedLock then
-            GetLocks(true)[slot] = carriedLock
-            carriedLock = nil
-        end
+    if landed then carriedLock = nil end
+    if old then
+        -- What was locked here is on the cursor now, unless it was dropped.
+        carriedLock = GetCursorInfo() and old or nil
     end
-    -- Put down somewhere else, or cleared: the lock is gone.
-    if carriedLock and GetCursorKey() ~= carriedLock then carriedLock = nil end
+    SetLock(slot, landed and carried or nil)
+    UpdateSlotLock(slot)
 end
 
-local function UpdateButton(button)
-    local slot = GetButtonSlot(button)
-    UpdateOutline(button, slot)
-    UpdateLock(button, slot)
+for _, name in ipairs({ "PickupAction", "PlaceAction", "UseAction" }) do
+    if _G[name] then hooksecurefunc(name, OnSlotSwapped) end
+end
+
+local function ClearCarriedIfEmpty()
+    carryClearQueued = false
+    if not GetCursorInfo() then carriedLock = nil end
+end
+
+local function OnCursorChanged()
+    -- The cursor can empty inside a PlaceAction before our hook sees the
+    -- lock land, so check again next frame.
+    if carriedLock and not carryClearQueued and not GetCursorInfo() then
+        carryClearQueued = true
+        C_Timer.After(0, ClearCarriedIfEmpty)
+    end
+end
+
+-- A lock whose slot now holds something else, put there without going
+-- through the hooks above (by another add-on, say), comes off, so it can't
+-- come back to life if the same action returns to the slot. While the bars
+-- are loading (logging in, switching spec) slots change in bulk and may
+-- briefly show the wrong bars, so locks are left alone then, and checked
+-- once the bars have settled.
+local SETTLE_TIME = 3      -- seconds after a load before checking locks
+local BULK_CHANGE = 12     -- more changed slots than this at once is a load
+local changedSlots = {}    -- slots changed since the last refresh
+local settleUntil = math.huge   -- no checks until the first load is done
+
+local function PruneLock(slot)
+    local locks = GetLocks()
+    local key = locks and locks[slot]
+    local current = key and GetActionKey(slot)
+    if current and current ~= key then SetLock(slot, nil) end
+end
+
+local function PruneChangedLocks()
+    local count = 0
+    for _ in pairs(changedSlots) do count = count + 1 end
+    if count <= BULK_CHANGE and GetTime() >= settleUntil then
+        for slot in pairs(changedSlots) do PruneLock(slot) end
+    end
+    wipe(changedSlots)
 end
 
 local function RefreshButtons()
     refreshQueued = false
-    ReconcileLocks()
-    if ranksDirty or not highestRanks then
-        ranksDirty = false
-        highestRanks = GetHighestRanks()
-    end
+    PruneChangedLocks()
     local inCombat = InCombatLockdown()
     ForEachButton(function(button)
         -- Follow Blizzard's own updates (paging, stance bars, drags).
         if not button.SpellRankUpgradeHooked and button.Update then
             button.SpellRankUpgradeHooked = true
-            hooksecurefunc(button, "Update", UpdateButton)
+            hooksecurefunc(button, "Update", UpdateButtonLock)
         end
         if not inCombat then CreateLockFrames(button) end
-        UpdateButton(button)
+        UpdateButtonLock(button)
     end)
 end
 
 -- Coalesce bursts of events into one refresh on the next frame, after
 -- Blizzard has updated its buttons.
-local function QueueRefresh(spellsChanged)
-    if spellsChanged then ranksDirty = true end
+local function QueueRefresh()
     if not refreshQueued then
         refreshQueued = true
         C_Timer.After(0, RefreshButtons)
@@ -856,12 +897,24 @@ end
 
 local function OnSlotChanged(slot)
     if slot and slot > 0 then changedSlots[slot] = true end
-    QueueRefresh(false)
+    QueueRefresh()
 end
 
-local function OnCursorChanged()
-    -- Only matters while a locked rank is on the cursor.
-    if carriedLock then QueueRefresh(false) end
+local function CheckAllLocks()
+    -- Before the timer fired, another load may have started; it checks.
+    if GetTime() < settleUntil then return end
+    local locks = GetLocks()
+    if locks then
+        for slot in pairs(locks) do PruneLock(slot) end
+    end
+    QueueRefresh()
+end
+
+-- The bars are (re)loading: logging in, a loading screen, a spec change.
+local function OnBarsLoading()
+    specKey = nil
+    settleUntil = GetTime() + SETTLE_TIME
+    C_Timer.After(SETTLE_TIME, CheckAllLocks)
 end
 
 -- Escape ends lock mode: this hidden frame is shown while lock mode is on,
@@ -881,7 +934,9 @@ function SetLockMode(on, reason)
     end
     lockMode = on
     lockModeFrame:SetShown(on)
-    -- Covers and padlocks only; nothing else on the buttons changes.
+    -- Covers and padlocks only; nothing else on the buttons changes. If
+    -- every refresh so far ran in combat, the lock frames aren't made yet.
+    if on then ForEachButton(CreateLockFrames) end
     ForEachButton(UpdateButtonLock)
     if reason then Print(reason) end
 end
@@ -921,21 +976,33 @@ local function CreatePulse(button)
     return anim
 end
 
--- Pulse every button showing one of these action slots.
+local pulseSlots = {}   -- slot -> true, pulsed on the next frame
+local pulseQueued = false
+
+local function PulseButton(button)
+    local slot = GetButtonSlot(button)
+    if slot and pulseSlots[slot] and button:IsVisible() then
+        local anim = button.SpellRankUpgradePulse or CreatePulse(button)
+        anim:Stop()
+        anim:Play()
+    end
+end
+
+local function PlayPulses()
+    pulseQueued = false
+    ForEachButton(PulseButton)
+    wipe(pulseSlots)
+end
+
+-- Pulse every button showing one of these action slots. Upgrades made in
+-- the same frame are pulsed together, on the next frame, once the buttons
+-- show the new rank's icon.
 function PulseSlots(slots)
-    local wanted = {}
-    for _, slot in ipairs(slots) do wanted[slot] = true end
-    -- Next frame, once the button shows the new rank's icon.
-    C_Timer.After(0, function()
-        ForEachButton(function(button)
-            local slot = GetButtonSlot(button)
-            if slot and wanted[slot] and button:IsVisible() then
-                local anim = button.SpellRankUpgradePulse or CreatePulse(button)
-                anim:Stop()
-                anim:Play()
-            end
-        end)
-    end)
+    for _, slot in ipairs(slots) do pulseSlots[slot] = true end
+    if not pulseQueued then
+        pulseQueued = true
+        C_Timer.After(0, PlayPulses)
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -985,22 +1052,27 @@ events:RegisterEvent("PLAYER_REGEN_DISABLED")
 events:RegisterEvent("ADDON_LOADED")
 -- Button refreshes.
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
-events:RegisterEvent("SPELLS_CHANGED")
 events:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 events:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
 events:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
 
--- Event -> whether your spells may have changed (rebuild highest ranks).
+-- Events that refresh every button.
 local REFRESH_EVENTS = {
-    PLAYER_ENTERING_WORLD = true, SPELLS_CHANGED = true,
-    ACTIONBAR_PAGE_CHANGED = false, UPDATE_BONUS_ACTIONBAR = false,
-    ACTIVE_TALENT_GROUP_CHANGED = false, PLAYER_SPECIALIZATION_CHANGED = false,
+    PLAYER_ENTERING_WORLD = true,
+    ACTIONBAR_PAGE_CHANGED = true, UPDATE_BONUS_ACTIONBAR = true,
+    ACTIVE_TALENT_GROUP_CHANGED = true, PLAYER_SPECIALIZATION_CHANGED = true,
+}
+
+-- Events after which the bars may be (re)loading.
+local BAR_LOAD_EVENTS = {
+    PLAYER_ENTERING_WORLD = true,
+    ACTIVE_TALENT_GROUP_CHANGED = true, PLAYER_SPECIALIZATION_CHANGED = true,
 }
 
 events:SetScript("OnEvent", function(_, event, arg1)
-    local spellsChanged = REFRESH_EVENTS[event]
-    if spellsChanged ~= nil then
-        QueueRefresh(spellsChanged)
+    if REFRESH_EVENTS[event] then
+        if BAR_LOAD_EVENTS[event] then OnBarsLoading() end
+        QueueRefresh()
     elseif event == "ACTIONBAR_SLOT_CHANGED" then
         OnSlotChanged(arg1)
     elseif event == "CURSOR_CHANGED" then
@@ -1011,22 +1083,16 @@ events:SetScript("OnEvent", function(_, event, arg1)
             -- Opt-in list of spell names to auto-rank. The old opt-out
             -- list and saved checkbox toggle are dropped.
             SpellRankUpgradeDB.enabled = SpellRankUpgradeDB.enabled or {}
-            -- Locked slots per spec: spec key -> { slot -> action key }.
-            -- Locks saved as a bare spell ID become "spell:<id>". The
-            -- earlier slot -> spell name format is dropped.
+            -- Locked slots per set of bars: spec key -> { slot -> action key }.
             SpellRankUpgradeDB.locks = SpellRankUpgradeDB.locks or {}
-            for _, locks in pairs(SpellRankUpgradeDB.locks) do
-                for slot, key in pairs(locks) do
-                    if type(key) == "number" then locks[slot] = "spell:" .. key end
-                end
-            end
-            SpellRankUpgradeDB.locked = nil
             SpellRankUpgradeDB.excluded = nil
             SpellRankUpgradeDB.showChecks = nil
             db = SpellRankUpgradeDB
         end
     elseif event == "PLAYER_REGEN_ENABLED" then
         ProcessPending()
+        -- Refreshes in combat can't make the lock frames; make them now.
+        QueueRefresh()
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- The covers would stop you clicking to cast; get out of the way.
         SetLockMode(false, "Lock mode ended because you entered combat.")
