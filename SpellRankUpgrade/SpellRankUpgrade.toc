@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Spell Rank Upgrade
 ## Notes: When you learn a new rank of a spell you've ticked in the spellbook, replaces the lower ranks of that spell on your action bars.
-## Version: 0.1.0
+## Version: 0.1.1
 ## Author: Realek
 ## X-Website: https://github.com/realek
 ## SavedVariablesPerCharacter: SpellRankUpgradeDB
