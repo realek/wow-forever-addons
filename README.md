@@ -34,9 +34,8 @@ When you learn a new rank of a spell (for example *Holy Light Rank 2*), it repla
 - Upgraded buttons **flash gold** a few times so you can see what changed. Buttons on bar pages you aren't looking at don't flash.
 - If you learn a rank during combat, it upgrades your bars when combat ends, because action bars can't be changed in combat.
 - If you're holding something on the cursor, it waits until you put it down, so nothing gets dropped.
-- Any action bar button holding a spell below your highest known rank gets a **red border**, the same one the game draws in green around equipped items, so you can see at a glance which spells are downranked. This happens whether the spell is ticked or not.
-- **Lock a slot to keep a lower rank.** Turn on **Set up rank-locked action bar slots** in the spellbook's settings dropdown (or type `/spellrankupdate lock`), then click slots on your action bars. Any slot can be locked, whatever is in it: a ranked spell, a spell without ranks, a macro or an item. Locked slots get a **padlock** and are never upgraded, even if the spell is ticked. Other slots holding the same spell still upgrade as usual. Click again to unlock.
-  - While lock mode is on, every button shows a faint padlock and a light shade. Clicking doesn't cast anything, but you can still drop spells onto your bars.
+- **Lock a slot to keep a lower rank.** Turn on **Set up rank-locked action bar slots** in the spellbook's settings dropdown (or type `/spellrankupdate lock`), then click slots on your action bars. Any slot can be locked, whatever is in it: a ranked spell, a spell without ranks, a macro or an item. Locked slots get a **red border**, the same one the game draws in green around equipped items, and are never upgraded, even if the spell is ticked. Other slots holding the same spell still upgrade as usual. Click again to unlock.
+  - While lock mode is on, every button shows a light shade and a padlock: bright on locked slots, faint on the rest. Clicking doesn't cast anything, but you can still drop spells onto your bars.
   - Lock mode ends when you turn it off, press **Escape**, close the spellbook or enter combat.
   - A lock holds exactly what you locked; for a spell, that's the rank. Drag it to another slot and the lock moves with it. Replace it with something else and the lock comes off.
   - Locks are saved per character and per spec.
