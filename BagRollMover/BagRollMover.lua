@@ -1,4 +1,4 @@
--- Loot Roll Anchor
+-- Bag & Roll Mover
 -- Move the group loot roll window and the bags from Edit Mode.
 --
 -- While Edit Mode is open we show draggable "Loot Rolls" and "Bags" boxes.
@@ -27,7 +27,7 @@ local EST_BAG_COLUMNS = 4         -- one separate bag window
 local EST_COMBINED_COLUMNS = 10   -- the combined bag window
 local EST_PADDING_W, EST_PADDING_H = 16, 70   -- borders, title, money bar
 
-local db    -- LootRollAnchorDB (saved variables)
+local db    -- BagRollMoverDB (saved variables)
 local lootMover, bagMover
 local pendingAfterCombat = false
 
@@ -43,8 +43,8 @@ end
 ---------------------------------------------------------------------------
 
 local function LoadDatabase()
-    LootRollAnchorDB = LootRollAnchorDB or {}
-    db = LootRollAnchorDB
+    BagRollMoverDB = BagRollMoverDB or {}
+    db = BagRollMoverDB
 
     -- Upgrade from v1.0, which stored one position at the top level.
     if not db.default then
@@ -294,7 +294,7 @@ end
 ---------------------------------------------------------------------------
 
 lootMover = Util.CreateMover({
-    name = "LootRollAnchorFrame",
+    name = "BagRollMoverLootFrame",
     label = "Loot Rolls",
     width = 250, height = 90,
     defaults = LOOT_DEFAULTS,
@@ -304,7 +304,7 @@ lootMover = Util.CreateMover({
 })
 
 bagMover = Util.CreateMover({
-    name = "LootRollAnchorBagFrame",
+    name = "BagRollMoverBagFrame",
     label = "Bags",
     width = 200, height = 60,
     defaults = BAG_DEFAULTS,
