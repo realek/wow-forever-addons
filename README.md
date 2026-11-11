@@ -6,8 +6,9 @@ Small quality-of-life add-ons for **World of Warcraft: Forever** (interface `160
 
 1. Copy the add-on folders you want into
    `World of Warcraft\_forever_\Interface\AddOns\`.
-2. **Restart the game completely.** `/reload` doesn't pick up new add-ons.
-3. Check that they're enabled in the **AddOns** list on the character select screen.
+2. Check that they're enabled in the **AddOns** list on the character select screen.
+
+**No restart needed:** WoW: Forever picks up new add-ons automatically.
 
 Each folder is a separate add-on, so you can install any combination.
 
