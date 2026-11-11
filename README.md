@@ -14,7 +14,7 @@ Each folder is a separate add-on, so you can install any combination.
 
 ---
 
-## Loot Roll Anchor
+## Bag & Roll Mover
 
 Lets you move the **group loot roll window** (Need / Greed / Pass) and your **bags** from **Edit Mode**.
 
