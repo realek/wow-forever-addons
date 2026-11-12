@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Bag & Roll Mover
-## Notes: Move the group loot roll (Need/Greed/Pass) window and the bags (combined or separate) from Edit Mode, with snapping.
-## Version: 0.1.0
+## Notes: Move the group loot roll (Need/Greed/Pass) window, the bags (combined or separate) and the alerts (such as "You won") from Edit Mode, with snapping.
+## Version: 0.2.0
 ## Author: Realek
 ## X-Website: https://github.com/realek
 ## IconTexture: Interface\Buttons\UI-GroupLoot-Dice-Up

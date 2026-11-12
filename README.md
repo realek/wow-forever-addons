@@ -16,13 +16,15 @@ Each folder is a separate add-on, so you can install any combination.
 
 ## Bag & Roll Mover
 
-Lets you move the **group loot roll window** (Need / Greed / Pass) and your **bags** from **Edit Mode**.
+Lets you move the **group loot roll window** (Need / Greed / Pass), your **bags** and the **alerts** (such as the "You won" loot notification) from **Edit Mode**.
 
-- Open Edit Mode. A **Loot Rolls** box and a **Bags** box appear. Drag them where you want the windows.
+- Open Edit Mode. **Loot Rolls**, **Bags** and **Alerts** boxes appear. Drag them where you want the windows.
 - Boxes snap to screen edges, the screen center, the Edit Mode grid and nearby Edit Mode elements, with the same guide lines as the built-in elements.
 - Each Edit Mode layout remembers its own positions.
 - Works with both **combined** and **separate** bags.
 - Your bags stay wherever the game puts them until you move the Bags box.
+- The Alerts box moves all of the game's pop-up alerts: loot won, money won, achievements and so on. They stay in the game's spot until you move the box. After that they stack upward from the box when it's in the bottom half of the screen and downward when it's in the top half. They no longer pile on top of the loot roll window.
+- Right-click the Bags or Alerts box to give that window back to the game.
 - If a window can't be moved during combat, it moves into place as soon as combat ends.
 
 There are no slash commands; everything is done in Edit Mode.
