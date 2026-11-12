@@ -1,8 +1,10 @@
 -- Bag & Roll Mover
--- Move the group loot roll window and the bags from Edit Mode.
+-- Move the group loot roll window, the bags and the alerts (loot won, etc.)
+-- from Edit Mode.
 --
--- While Edit Mode is open we show draggable "Loot Rolls" and "Bags" boxes.
--- Whenever the game positions those windows, we put them back on their box.
+-- While Edit Mode is open we show draggable "Loot Rolls", "Bags" and
+-- "Alerts" boxes. Whenever the game positions those windows, we put them
+-- back on their box.
 -- Each Edit Mode layout remembers its own positions.
 
 local ADDON_NAME, ns = ...
@@ -27,8 +29,12 @@ local EST_BAG_COLUMNS = 4         -- one separate bag window
 local EST_COMBINED_COLUMNS = 10   -- the combined bag window
 local EST_PADDING_W, EST_PADDING_H = 16, 70   -- borders, title, money bar
 
+-- Like the bags, alerts stay where the game puts them until the box is moved.
+local ALERT_DEFAULTS = { point = "BOTTOM", relPoint = "BOTTOM", x = 0, y = 320, custom = false }
+local ALERT_SPACING = 10       -- same gap the game leaves between alerts
+
 local db    -- BagRollMoverDB (saved variables)
-local lootMover, bagMover
+local lootMover, bagMover, alertMover
 local pendingAfterCombat = false
 
 local function CanMove(frames)
@@ -52,11 +58,13 @@ local function LoadDatabase()
         db.point, db.relPoint, db.x, db.y = nil, nil, nil, nil
     end
     db.bags = db.bags or {}
+    db.alerts = db.alerts or {}
 
     -- Loot roll positions live at the top level (db.default / db.layouts)
     -- so older saved variables keep working.
     lootMover:SetStore(db)
     bagMover:SetStore(db.bags)
+    alertMover:SetStore(db.alerts)
 end
 
 ---------------------------------------------------------------------------
@@ -284,9 +292,134 @@ local function HookBagFrames()
     end
 end
 
-local function UpdateBagHint()
-    local pos = bagMover:GetPosition()
-    bagMover.box:SetHint((pos and pos.custom) and "Right-click to reset" or "Drag to move (game default)")
+local function UpdateHint(mover)
+    local pos = mover:GetPosition()
+    mover.box:SetHint((pos and pos.custom) and "Right-click to reset" or "Drag to move (game default)")
+end
+
+---------------------------------------------------------------------------
+-- Alerts
+---------------------------------------------------------------------------
+-- Toasts such as "You won: <item>" come from the game's AlertFrame. It
+-- stacks them upward from itself, and also on top of the loot roll window
+-- while that is open. Once the Alerts box has been moved we stack them
+-- ourselves from the box, away from the nearest screen edge, and leave the
+-- loot roll window out of it.
+
+local applyingAlerts = false
+local alertsMoved = false   -- we have taken AlertFrame off its own spot
+local alertHome             -- AlertFrame's own anchors, given back on reset
+local alertsHooked = false
+
+-- The open alerts, in the order the game stacks them, or nil if this
+-- client's alert system doesn't look the way we expect.
+local function CollectAlerts()
+    local subSystems = AlertFrame and AlertFrame.alertFrameSubSystems
+    if type(subSystems) ~= "table" then return nil end
+
+    local list = {}
+    local ok = pcall(function()
+        for _, sub in ipairs(subSystems) do
+            -- Skip windows that are only chained in (loot rolls, talking
+            -- head); they have their own place.
+            if type(sub) == "table" and not sub.anchorFrame then
+                local pool, single = sub.alertFramePool, sub.alertFrame
+                if pool and pool.EnumerateActive then
+                    for f in pool:EnumerateActive() do list[#list + 1] = f end
+                elseif single and single.IsShown and single:IsShown() then
+                    list[#list + 1] = single
+                end
+            end
+        end
+    end)
+    return ok and list or nil
+end
+
+-- Lay the alerts out from the box: the first one on the box edge nearest
+-- the screen edge, further ones stacking away from it.
+local function StackAlerts(pos)
+    local alerts = CollectAlerts()
+    if not alerts then return end
+
+    local box = alertMover.box
+    local up
+    local _, b, _, h = box:GetRect()
+    if b then
+        up = (b + h / 2) < UIParent:GetHeight() / 2   -- box in lower half
+    else
+        up = not pos.point:find("TOP")
+    end
+    local edge, far = up and "BOTTOM" or "TOP", up and "TOP" or "BOTTOM"
+    local gap = up and ALERT_SPACING or -ALERT_SPACING
+
+    local prev
+    for _, f in ipairs(alerts) do
+        f:ClearAllPoints()
+        if prev then
+            f:SetPoint(edge, prev, far, 0, gap)
+        else
+            f:SetPoint(edge, box, edge, 0, 0)
+        end
+        prev = f
+    end
+end
+
+local function AttachAlerts()
+    local pos = alertMover:GetPosition()
+    if applyingAlerts or not AlertFrame or not pos or not pos.custom then return end
+    if not CanMove({ AlertFrame }) then
+        pendingAfterCombat = true
+        return
+    end
+
+    applyingAlerts = true
+    -- AlertFrame itself goes on the box too, in case anything stacks off it.
+    AlertFrame:ClearAllPoints()
+    AlertFrame:SetPoint("BOTTOM", alertMover.box, "BOTTOM", 0, 0)
+    alertsMoved = true
+    pcall(StackAlerts, pos)
+    applyingAlerts = false
+end
+
+local function RememberAlertHome()
+    alertHome = {}
+    for i = 1, AlertFrame:GetNumPoints() do
+        alertHome[i] = { AlertFrame:GetPoint(i) }
+    end
+end
+
+-- Hand the alerts back to the game.
+local function RestoreAlerts()
+    if not alertsMoved or not AlertFrame then return end
+    alertsMoved = false
+    if alertHome and #alertHome > 0 then
+        applyingAlerts = true
+        AlertFrame:ClearAllPoints()
+        for _, p in ipairs(alertHome) do AlertFrame:SetPoint(unpack(p)) end
+        applyingAlerts = false
+    end
+    -- Let the game re-stack any alerts that are open right now.
+    if AlertFrame.UpdateAnchors then pcall(AlertFrame.UpdateAnchors, AlertFrame) end
+end
+
+local function HookAlerts()
+    if alertsHooked or not AlertFrame then return end
+    alertsHooked = true
+    RememberAlertHome()
+
+    hooksecurefunc(AlertFrame, "SetPoint", function()
+        if applyingAlerts then return end
+        local pos = alertMover:GetPosition()
+        if pos and pos.custom then
+            AttachAlerts()
+        else
+            RememberAlertHome()   -- the game moved its own spot; follow it
+        end
+    end)
+    -- The game re-stacks every open alert here whenever one comes or goes.
+    if type(AlertFrame.UpdateAnchors) == "function" then
+        hooksecurefunc(AlertFrame, "UpdateAnchors", AttachAlerts)
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -310,12 +443,29 @@ bagMover = Util.CreateMover({
     defaults = BAG_DEFAULTS,
     onMoved = function(pos)
         pos.custom = true
-        UpdateBagHint()
+        UpdateHint(bagMover)
         AttachBags()
     end,
     -- Back to the game's own placement; it takes over the next time a bag
     -- is opened or closed.
-    onReset = UpdateBagHint,
+    onReset = function() UpdateHint(bagMover) end,
+})
+
+alertMover = Util.CreateMover({
+    name = "BagRollMoverAlertFrame",
+    label = "Alerts",
+    width = 276, height = 96,   -- about the size of a "You won" alert
+    defaults = ALERT_DEFAULTS,
+    snapExclude = AlertFrame and { [AlertFrame] = true } or nil,
+    onMoved = function(pos)
+        pos.custom = true
+        UpdateHint(alertMover)
+        AttachAlerts()
+    end,
+    onReset = function()
+        UpdateHint(alertMover)
+        RestoreAlerts()
+    end,
 })
 
 -- Load the active layout's positions and move everything there.
@@ -323,10 +473,14 @@ local function RefreshLayout()
     if not db then return end
     lootMover:Refresh()
     bagMover:Refresh()
+    alertMover:Refresh()
     UpdateBagBoxSize()
-    UpdateBagHint()
+    UpdateHint(bagMover)
+    UpdateHint(alertMover)
     AttachLootFrames()
     AttachBags()
+    local alertPos = alertMover:GetPosition()
+    if alertPos and alertPos.custom then AttachAlerts() else RestoreAlerts() end
 end
 
 ---------------------------------------------------------------------------
@@ -346,15 +500,18 @@ function handlers.PLAYER_LOGIN()
             RefreshLayout()
             lootMover:Show()
             bagMover:Show()
+            alertMover:Show()
         end,
         onExit = function()
             lootMover:Hide()
             bagMover:Hide()
+            alertMover:Hide()
         end,
         onLayoutChanged = RefreshLayout,
     })
     HookLootFrames()
     HookBagFrames()
+    HookAlerts()
     RefreshLayout()
 end
 
@@ -369,6 +526,7 @@ function handlers.PLAYER_REGEN_ENABLED()
     pendingAfterCombat = false
     AttachLootFrames()
     AttachBags()
+    AttachAlerts()
 end
 
 local events = CreateFrame("Frame")
